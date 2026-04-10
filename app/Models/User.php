@@ -13,6 +13,11 @@ class User extends Model
     protected $table = 'user';
     protected $primaryKey = 'id_user';
     
+    // DODAJ TE 3 LINIJKI:
+    public $timestamps = true;
+    const CREATED_AT = 'created_at';
+    const UPDATED_AT = 'updated_at';
+    
     protected $fillable = ['login', 'password', 'email'];
     protected $hidden = ['password'];
     
@@ -42,5 +47,17 @@ class User extends Model
     public function booksUpdated()
     {
         return $this->hasMany(Book::class, 'updated_by');
+    }
+    
+    // DODAJ TĄ METODĘ NA SAMYM KOŃCU:
+    public function getBooksCountByStatus($statusId = null)
+    {
+        $query = $this->trackedBooks();
+        
+        if ($statusId) {
+            $query->wherePivot('id_status', $statusId);
+        }
+        
+        return $query->count();
     }
 }

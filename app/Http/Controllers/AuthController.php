@@ -22,8 +22,6 @@ class AuthController extends Controller
     
     public function login(Request $request)
     {
-        \Log::info('LOGIN ATTEMPT:', ['login' => $request->login]);
-        
         $request->validate([
             'login' => 'required|string|min:3|max:60',
             'password' => 'required|string|min:8',
@@ -36,33 +34,34 @@ class AuthController extends Controller
         
         $user = User::where('login', $request->login)->first();
         
-        \Log::info('USER FOUND:', ['user' => $user ? $user->id_user : 'null']);
-        
         if (!$user) {
-            \Log::warning('USER NOT FOUND:', ['login' => $request->login]);
             return back()->withErrors(['login' => 'Nieprawidłowy login lub hasło'])->withInput();
         }
         
-        $passwordCheck = Hash::check($request->password, $user->password);
-        \Log::info('PASSWORD CHECK:', ['result' => $passwordCheck, 'input' => $request->password]);
-        
-        if (!$passwordCheck) {
-            \Log::warning('WRONG PASSWORD for user:', ['id' => $user->id_user]);
+        if (!Hash::check($request->password, $user->password)) {
             return back()->withErrors(['password' => 'Nieprawidłowy login lub hasło'])->withInput();
         }
         
-        $roles = $user->roles()->pluck('name')->toArray();
-        \Log::info('USER ROLES:', $roles);
+        // Pobierz role Z BAZY (nie z Eloquent - pewniejsze)
+        $roles = DB::table('user_role')
+            ->join('role', 'user_role.id_role', '=', 'role.id_role')
+            ->where('user_role.id_user', $user->id_user)
+            ->where('role.is_active', 1)
+            ->pluck('role.name')
+            ->toArray();
+        
+        // DEBUG: Sprawdź jakie role pobraliśmy
+        // dd(["user_id" => $user->id_user, "roles" => $roles]);
         
         Session::put('user_id', $user->id_user);
         Session::put('user_login', $user->login);
         Session::put('user_email', $user->email);
         Session::put('user_roles', $roles);
         
-        \Log::info('LOGIN SUCCESS:', ['user_id' => $user->id_user]);
+        // ZAPISZ SESJĘ NATYCHMIAST
+        Session::save();
         
-        return redirect()->route('home')
-                         ->with('success', 'Zalogowano pomyślnie! Witaj ' . $user->login . '!');
+        return redirect()->route('home')->with('success', 'Zalogowano pomyślnie! Witaj ' . $user->login . '! Role: ' . implode(', ', $roles));
     }
     
     public function showRegister()
@@ -76,8 +75,6 @@ class AuthController extends Controller
     
     public function register(Request $request)
     {
-        \Log::info('REGISTER START', $request->all());
-        
         try {
             $validated = $request->validate([
                 'login' => 'required|string|min:3|max:60|unique:user,login',
@@ -85,13 +82,17 @@ class AuthController extends Controller
                 'password' => 'required|string|min:8|confirmed',
                 'password_confirmation' => 'required',
             ], [
+                'login.required' => 'Login jest wymagany',
+                'login.min' => 'Login musi mieć przynajmniej 3 znaki',
                 'login.unique' => 'Ten login jest już zajęty',
+                'email.required' => 'Email jest wymagany',
+                'email.email' => 'Podaj poprawny adres email',
                 'email.unique' => 'Ten email jest już zarejestrowany',
-                'password.confirmed' => 'Hasła nie są identyczne',
+                'password.required' => 'Hasło jest wymagane',
                 'password.min' => 'Hasło musi mieć przynajmniej 8 znaków',
+                'password.confirmed' => 'Hasła nie są identyczne',
+                'password_confirmation.required' => 'Potwierdzenie hasła jest wymagane',
             ]);
-            
-            \Log::info('VALIDATION PASSED');
             
             $forbiddenLogins = ['admin', 'administrator', 'root'];
             foreach ($forbiddenLogins as $forbidden) {
@@ -107,17 +108,20 @@ class AuthController extends Controller
             $user = User::create([
                 'login' => $validated['login'],
                 'email' => $validated['email'],
-                'password' => Hash::make($validated['password']), // TUTAJ POPRAWIĆ - DODAĆ Hash::make
+                'password' => Hash::make($validated['password']),
             ]);
-            
-            \Log::info('USER CREATED', ['id' => $user->id_user]);
             
             $readerRole = Role::where('name', 'Czytelnik')->first();
             
             if (!$readerRole) {
-                throw new \Exception('Rola Czytelnik nie istnieje w bazie');
+                // Jeśli rola Czytelnik nie istnieje, stwórz ją
+                $readerRole = Role::create([
+                    'name' => 'Czytelnik',
+                    'is_active' => true,
+                ]);
             }
             
+            // TYLKO rola Czytelnik dla nowych użytkowników!
             DB::table('user_role')->insert([
                 'id_user' => $user->id_user,
                 'id_role' => $readerRole->id_role,
@@ -126,21 +130,24 @@ class AuthController extends Controller
             
             DB::commit();
             
-            \Log::info('REGISTRATION SUCCESS', ['user_id' => $user->id_user]);
+            // Pobierz wszystkie role użytkownika (tylko Czytelnik)
+            $allRoles = DB::table('user_role')
+                ->join('role', 'user_role.id_role', '=', 'role.id_role')
+                ->where('user_role.id_user', $user->id_user)
+                ->where('role.is_active', 1)
+                ->pluck('role.name')
+                ->toArray();
             
             Session::put('user_id', $user->id_user);
             Session::put('user_login', $user->login);
             Session::put('user_email', $user->email);
-            Session::put('user_roles', ['Czytelnik']);
+            Session::put('user_roles', $allRoles);
+            Session::save();
             
-            return redirect()->route('home')
-                             ->with('success', 'Rejestracja zakończona sukcesem!');
+            return redirect()->route('home')->with('success', 'Rejestracja zakończona sukcesem! Twoje role: ' . implode(', ', $allRoles));
             
         } catch (\Exception $e) {
             DB::rollBack();
-            
-            \Log::error('REGISTRATION ERROR: ' . $e->getMessage());
-            \Log::error('Stack trace: ' . $e->getTraceAsString());
             
             return back()->withErrors([
                 'error' => 'Błąd rejestracji: ' . $e->getMessage()
@@ -158,8 +165,7 @@ class AuthController extends Controller
         
         Session::flush();
         
-        return redirect()->route('home')
-                         ->with('success', 'Wylogowano pomyślnie. Do zobaczenia ' . $login . '!');
+        return redirect()->route('home')->with('success', 'Wylogowano pomyślnie. Do zobaczenia ' . $login . '!');
     }
     
     public function profile()

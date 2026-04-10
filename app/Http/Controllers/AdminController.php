@@ -9,23 +9,25 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class AdminController extends Controller
 {
-    /**
-     * Wyświetlanie listy użytkowników
-     */
     public function users(Request $request)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
-            return redirect()->route('home')->with('error', 'Brak uprawnień administracyjnych.');
+        if (!Session::has('user_id')) {
+            return redirect()->route('login');
         }
         
-        // Pobieranie użytkowników z ich rolami
+        $userRoles = Session::get('user_roles', []);
+        
+        // TYLKO ADMIN
+        if (!in_array('Admin', $userRoles)) {
+            return redirect()->route('home')->with('error', 'Tylko administrator może zarządzać użytkownikami.');
+        }
+        
         $query = User::with('roles');
         
-        // Wyszukiwanie użytkowników
         if ($request->has('search') && !empty($request->search)) {
             $search = $request->search;
             $query->where(function($q) use ($search) {
@@ -40,32 +42,29 @@ class AdminController extends Controller
         return view('admin.users', compact('users', 'roles'));
     }
     
-    /**
-     * Aktualizacja roli użytkownika
-     */
     public function updateUserRole(Request $request, $userId)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
+        if (!Session::has('user_id')) {
             return response()->json(['error' => 'Brak uprawnień'], 403);
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
+            return response()->json(['error' => 'Tylko administrator może zmieniać role'], 403);
         }
         
         $user = User::findOrFail($userId);
         
-        // Sprawdzenie czy próba zmiany uprawnień admina
-        if ($user->id_user == Session::get('user_id')) {
-            return response()->json(['error' => 'Nie możesz zmienić swoich własnych uprawnień'], 400);
+        if ($user->id_user == Session::get('user_id') && $request->role_id == Role::where('name', 'Admin')->first()->id_role) {
+            return response()->json(['error' => 'Nie możesz zmienić swojej własnej roli Admin'], 400);
         }
         
-        // Walidacja danych wejściowych
         $validated = $request->validate([
             'role_id' => 'required|exists:role,id_role',
             'action' => 'required|in:add,remove',
         ]);
         
-        // Obsługa dodawania/usuwań roli
         if ($validated['action'] == 'add') {
-            // Sprawdzenie czy użytkownik już ma tę rolę
             $existing = DB::table('user_role')
                          ->where('id_user', $userId)
                          ->where('id_role', $validated['role_id'])
@@ -79,7 +78,15 @@ class AdminController extends Controller
                 ]);
             }
         } else {
-            // Usuwanie roli
+            // Zapobiegaj usunięciu ostatniej roli Czytelnik
+            $userRolesCount = DB::table('user_role')
+                ->where('id_user', $userId)
+                ->count();
+            
+            if ($userRolesCount <= 1) {
+                return response()->json(['error' => 'Użytkownik musi mieć przynajmniej jedną rolę'], 400);
+            }
+            
             DB::table('user_role')
               ->where('id_user', $userId)
               ->where('id_role', $validated['role_id'])
@@ -89,105 +96,114 @@ class AdminController extends Controller
         return response()->json(['success' => 'Rola zaktualizowana']);
     }
     
-    /**
-     * Resetowanie hasła użytkownika
-     */
     public function resetPassword(Request $request, $userId)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
+        if (!Session::has('user_id')) {
+            return redirect()->route('admin.users')->with('error', 'Brak uprawnień.');
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
             return redirect()->route('admin.users')->with('error', 'Brak uprawnień.');
         }
         
         $user = User::findOrFail($userId);
         
-        // Generowanie nowego hasła
-        $newPassword = str_random(10);
+        $newPassword = Str::random(10);
         
-        // Aktualizacja hasła użytkownika
         $user->password = Hash::make($newPassword);
         $user->save();
         
-        // W rzeczywistej aplikacji tutaj byłaby wysyłka emaila z nowym hasłem
-        // Na potrzeby projektu zwracamy hasło w komunikacie
         return back()->with('success', 'Hasło zresetowane. Nowe hasło: ' . $newPassword);
     }
     
-    /**
-     * Dezaktywacja/aktywacja użytkownika
-     */
     public function toggleUserStatus($userId)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
+        if (!Session::has('user_id')) {
+            return redirect()->route('admin.users')->with('error', 'Brak uprawnień.');
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
             return redirect()->route('admin.users')->with('error', 'Brak uprawnień.');
         }
         
         $user = User::findOrFail($userId);
         
-        // Sprawdzenie czy próba dezaktywacji samego siebie
         if ($user->id_user == Session::get('user_id')) {
             return back()->with('error', 'Nie możesz dezaktywować swojego własnego konta.');
         }
         
-        // TODO: Dodanie pola is_active w tabeli user
-        // Na razie symulacja poprzez usunięcie wszystkich ról
-        
-        if ($user->roles()->count() > 0) {
-            // Dezaktywacja - usunięcie wszystkich ról
-            DB::table('user_role')->where('id_user', $userId)->delete();
-            $message = 'Konto użytkownika dezaktywowane';
+        if ($user->roles()->where('name', '!=', 'Czytelnik')->exists()) {
+            // Usuń wszystkie role oprócz Czytelnik
+            DB::table('user_role')
+                ->where('id_user', $userId)
+                ->where('id_role', '!=', Role::where('name', 'Czytelnik')->first()->id_role)
+                ->delete();
+            $message = 'Uprawnienia użytkownika zredukowane do roli Czytelnik';
         } else {
-            // Aktywacja - dodanie domyślnej roli Czytelnik
+            // Przywróć podstawowe role
             $readerRole = Role::where('name', 'Czytelnik')->first();
             if ($readerRole) {
-                DB::table('user_role')->insert([
-                    'id_user' => $userId,
-                    'id_role' => $readerRole->id_role,
-                    'assigned_at' => now(),
-                ]);
+                // Upewnij się że ma rolę Czytelnik
+                $hasReader = DB::table('user_role')
+                    ->where('id_user', $userId)
+                    ->where('id_role', $readerRole->id_role)
+                    ->exists();
+                
+                if (!$hasReader) {
+                    DB::table('user_role')->insert([
+                        'id_user' => $userId,
+                        'id_role' => $readerRole->id_role,
+                        'assigned_at' => now(),
+                    ]);
+                }
             }
-            $message = 'Konto użytkownika aktywowane';
+            $message = 'Konto użytkownika aktywowane z podstawową rolą';
         }
         
         return back()->with('success', $message);
     }
     
-    /**
-     * Wyświetlanie statystyk systemu
-     */
     public function statistics()
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
-            return redirect()->route('home')->with('error', 'Brak uprawnień administracyjnych.');
+        if (!Session::has('user_id')) {
+            return redirect()->route('login');
         }
         
-        // Pobieranie statystyk systemu
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
+            return redirect()->route('home')->with('error', 'Tylko administrator może przeglądać statystyki.');
+        }
+        
         $stats = [
             'total_users' => User::count(),
             'total_books' => Book::count(),
             'total_reviews' => DB::table('review')->count(),
-            'active_today' => User::whereDate('last_login', now()->toDateString())->count(),
+            'active_today' => User::whereDate('created_at', now()->toDateString())->count(),
+            'avg_books_per_user' => User::count() > 0 ? DB::table('user_book')->count() / User::count() : 0,
         ];
         
-        // Pobieranie najnowszych użytkowników
-        $recentUsers = User::orderBy('created_at', 'desc')->take(5)->get();
-        
-        // Pobieranie najnowszych książek
+        $recentUsers = User::with('roles')->orderBy('created_at', 'desc')->take(5)->get();
         $recentBooks = Book::with('creator')->orderBy('created_at', 'desc')->take(5)->get();
+        $topBooks = Book::select('book.*')
+            ->selectRaw('(SELECT COUNT(*) FROM user_book WHERE user_book.id_book = book.id_book) as tracking_count')
+            ->orderBy('tracking_count', 'desc')
+            ->take(5)
+            ->get();
         
-        return view('admin.statistics', compact('stats', 'recentUsers', 'recentBooks'));
+        return view('admin.statistics', compact('stats', 'recentUsers', 'recentBooks', 'topBooks'));
     }
     
-    /**
-     * Zarządzanie rolami systemowymi
-     */
     public function roles()
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
-            return redirect()->route('home')->with('error', 'Brak uprawnień administracyjnych.');
+        if (!Session::has('user_id')) {
+            return redirect()->route('login');
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
+            return redirect()->route('home')->with('error', 'Tylko administrator może zarządzać rolami.');
         }
         
         $roles = Role::all();
@@ -195,22 +211,21 @@ class AdminController extends Controller
         return view('admin.roles', compact('roles'));
     }
     
-    /**
-     * Dodawanie nowej roli
-     */
     public function addRole(Request $request)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
+        if (!Session::has('user_id')) {
             return redirect()->route('admin.roles')->with('error', 'Brak uprawnień.');
         }
         
-        // Walidacja danych wejściowych
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
+            return redirect()->route('admin.roles')->with('error', 'Brak uprawnień.');
+        }
+        
         $validated = $request->validate([
             'name' => 'required|string|max:60|unique:role,name',
         ]);
         
-        // Tworzenie nowej roli
         Role::create([
             'name' => $validated['name'],
             'is_active' => true,
@@ -219,30 +234,119 @@ class AdminController extends Controller
         return back()->with('success', 'Rola dodana pomyślnie');
     }
     
-    /**
-     * Aktualizacja statusu roli
-     */
     public function toggleRoleStatus($roleId)
     {
-        // Weryfikacja uprawnień administratora
-        if (!Session::has('user_roles') || !in_array('Admin', Session::get('user_roles'))) {
+        if (!Session::has('user_id')) {
+            return redirect()->route('admin.roles')->with('error', 'Brak uprawnień.');
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
             return redirect()->route('admin.roles')->with('error', 'Brak uprawnień.');
         }
         
         $role = Role::findOrFail($roleId);
         
-        // Sprawdzenie czy próba dezaktywacji podstawowych ról
         $basicRoles = ['Admin', 'Moderator', 'Czytelnik'];
         if (in_array($role->name, $basicRoles)) {
             return back()->with('error', 'Nie można dezaktywować podstawowych ról systemowych.');
         }
         
-        // Przełączenie statusu aktywacji
         $role->is_active = !$role->is_active;
         $role->save();
         
         $status = $role->is_active ? 'aktywowana' : 'dezaktywowana';
         
         return back()->with('success', "Rola {$role->name} {$status}");
+    }
+    
+    // DODAJ TĘ METODĘ DO NAPRAWY RÓL
+    public function fixRolesAndPermissions()
+    {
+        if (!Session::has('user_id')) {
+            return redirect()->route('login');
+        }
+        
+        $userRoles = Session::get('user_roles', []);
+        if (!in_array('Admin', $userRoles)) {
+            return redirect()->route('home')->with('error', 'Tylko administrator może naprawiać role.');
+        }
+        
+        // 1. Upewnij się że podstawowe role istnieją
+        $basicRoles = ['Admin', 'Moderator', 'Czytelnik'];
+        foreach ($basicRoles as $roleName) {
+            $role = Role::where('name', $roleName)->first();
+            if (!$role) {
+                Role::create([
+                    'name' => $roleName,
+                    'is_active' => true,
+                ]);
+                echo "Utworzono rolę: $roleName<br>";
+            }
+        }
+        
+        // 2. Sprawdź czy admin ma rolę Admin
+        $adminUser = User::where('login', 'admin')->first();
+        $adminRole = Role::where('name', 'Admin')->first();
+        
+        if ($adminUser && $adminRole) {
+            $hasAdminRole = DB::table('user_role')
+                ->where('id_user', $adminUser->id_user)
+                ->where('id_role', $adminRole->id_role)
+                ->exists();
+            
+            if (!$hasAdminRole) {
+                DB::table('user_role')->insert([
+                    'id_user' => $adminUser->id_user,
+                    'id_role' => $adminRole->id_role,
+                    'assigned_at' => now(),
+                ]);
+                echo "Przypisano rolę Admin do użytkownika admin<br>";
+            }
+        }
+        
+        // 3. Sprawdź czy moderator ma rolę Moderator
+        $moderatorUser = User::where('login', 'moderator')->first();
+        $moderatorRole = Role::where('name', 'Moderator')->first();
+        
+        if ($moderatorUser && $moderatorRole) {
+            $hasModeratorRole = DB::table('user_role')
+                ->where('id_user', $moderatorUser->id_user)
+                ->where('id_role', $moderatorRole->id_role)
+                ->exists();
+            
+            if (!$hasModeratorRole) {
+                DB::table('user_role')->insert([
+                    'id_user' => $moderatorUser->id_user,
+                    'id_role' => $moderatorRole->id_role,
+                    'assigned_at' => now(),
+                ]);
+                echo "Przypisano rolę Moderator do użytkownika moderator<br>";
+            }
+        }
+        
+        // 4. Upewnij się że każdy użytkownik ma rolę Czytelnik
+        $readerRole = Role::where('name', 'Czytelnik')->first();
+        if ($readerRole) {
+            $users = DB::table('user')->get();
+            foreach ($users as $user) {
+                $hasReader = DB::table('user_role')
+                    ->where('id_user', $user->id_user)
+                    ->where('id_role', $readerRole->id_role)
+                    ->exists();
+                
+                if (!$hasReader) {
+                    DB::table('user_role')->insert([
+                        'id_user' => $user->id_user,
+                        'id_role' => $readerRole->id_role,
+                        'assigned_at' => now(),
+                    ]);
+                    echo "Dodano rolę Czytelnik dla użytkownika ID: {$user->id_user}<br>";
+                }
+            }
+        }
+        
+        echo "<hr><strong>Naprawa zakończona!</strong><br>";
+        echo "<a href='/admin/users'>Przejdź do panelu admina</a>";
     }
 }

@@ -11,10 +11,9 @@ class UserBook extends Model
 
     protected $table = 'user_book';
     
-    // Wyłączenie auto-increment i klucza głównego dla tabeli z kluczem złożonym
+    // DLA COMPOSITE KEY
     protected $primaryKey = null;
     public $incrementing = false;
-    
     public $timestamps = true;
     
     protected $fillable = [
@@ -26,30 +25,6 @@ class UserBook extends Model
         'start_date' => 'date',
         'planned_end_date' => 'date',
     ];
-    
-    // Nadpisać metodę delete() dla tabel bez klucza głównego
-    public function delete()
-    {
-        return \DB::table($this->table)
-            ->where('id_user', $this->id_user)
-            ->where('id_book', $this->id_book)
-            ->delete();
-    }
-    
-    // Nadpisać metodę save() dla tabel bez klucza głównego
-    public function save(array $options = [])
-    {
-        if ($this->exists) {
-            // Update
-            return \DB::table($this->table)
-                ->where('id_user', $this->id_user)
-                ->where('id_book', $this->id_book)
-                ->update($this->attributes);
-        } else {
-            // Insert
-            return \DB::table($this->table)->insert($this->attributes);
-        }
-    }
     
     public function user()
     {
@@ -64,5 +39,13 @@ class UserBook extends Model
     public function status()
     {
         return $this->belongsTo(ReadingStatus::class, 'id_status');
+    }
+    
+    // Metoda do znajdowania po composite key
+    public static function findByCompositeKey($userId, $bookId)
+    {
+        return static::where('id_user', $userId)
+                    ->where('id_book', $bookId)
+                    ->first();
     }
 }

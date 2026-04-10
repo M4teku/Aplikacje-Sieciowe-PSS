@@ -9,19 +9,14 @@ use Illuminate\Support\Facades\Session;
 
 class ReviewController extends Controller
 {
-    /**
-     * Wyświetlanie formularza dodawania recenzji
-     */
     public function create($bookId)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
         $book = Book::findOrFail($bookId);
         
-        // Sprawdzenie czy użytkownik już dodał recenzję dla tej książki
         $existingReview = Review::where('id_user', Session::get('user_id'))
                                 ->where('id_book', $bookId)
                                 ->first();
@@ -34,26 +29,19 @@ class ReviewController extends Controller
         return view('reviews.create', compact('book'));
     }
     
-    /**
-     * Zapis nowej recenzji do bazy
-     */
     public function store(Request $request, $bookId)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
-        // Walidacja danych wejściowych
         $validated = $request->validate([
             'rating' => 'required|integer|min:1|max:5',
             'content' => 'required|string|max:4000',
         ]);
         
-        // Sprawdzenie czy książka istnieje
         $book = Book::findOrFail($bookId);
         
-        // Sprawdzenie czy użytkownik już dodał recenzję
         $existingReview = Review::where('id_user', Session::get('user_id'))
                                 ->where('id_book', $bookId)
                                 ->first();
@@ -63,97 +51,125 @@ class ReviewController extends Controller
                              ->with('error', 'Już dodałeś recenzję dla tej książki.');
         }
         
-        // Dodanie danych użytkownika i książki
         $validated['id_user'] = Session::get('user_id');
         $validated['id_book'] = $bookId;
         
-        // Tworzenie recenzji w bazie
         Review::create($validated);
         
         return redirect()->route('books.show', $bookId)
                          ->with('success', 'Recenzja dodana pomyślnie!');
     }
     
-    /**
-     * Wyświetlanie formularza edycji recenzji
-     */
     public function edit($id)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
         $review = Review::with('book')->findOrFail($id);
         
-        // Sprawdzenie uprawnień użytkownika
-        if ($review->id_user != Session::get('user_id') && 
-            !in_array('Admin', Session::get('user_roles', [])) &&
-            !in_array('Moderator', Session::get('user_roles', []))) {
-            return redirect()->route('books.show', $review->id_book)
-                             ->with('error', 'Brak uprawnień do edycji tej recenzji.');
+        $userRoles = Session::get('user_roles', []);
+        $userId = Session::get('user_id');
+        
+        // TYLKO MODERATOR może edytować WSZYSTKIE recenzje
+        // USER może edytować tylko SWOJE recenzje
+        // ADMIN NIE MOŻE edytować recenzji (NIE MA DOSTĘPU!)
+        
+        // User edytuje swoje recenzje
+        if ($review->id_user == $userId) {
+            return view('reviews.edit', compact('review'));
         }
         
-        return view('reviews.edit', compact('review'));
+        // Moderator edytuje wszystkie recenzje
+        if (in_array('Moderator', $userRoles)) {
+            return view('reviews.edit', compact('review'));
+        }
+        
+        // Admin i inni - brak dostępu
+        return redirect()->route('books.show', $review->id_book)
+                         ->with('error', 'Brak uprawnień do edycji tej recenzji.');
     }
     
-    /**
-     * Aktualizacja recenzji w bazie
-     */
     public function update(Request $request, $id)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
         $review = Review::findOrFail($id);
         
-        // Sprawdzenie uprawnień użytkownika
-        if ($review->id_user != Session::get('user_id') && 
-            !in_array('Admin', Session::get('user_roles', [])) &&
-            !in_array('Moderator', Session::get('user_roles', []))) {
+        $userRoles = Session::get('user_roles', []);
+        $userId = Session::get('user_id');
+        
+        // TYLKO MODERATOR może edytować WSZYSTKIE recenzje
+        // USER może edytować tylko SWOJE recenzje
+        // ADMIN NIE MOŻE edytować recenzji (NIE MA DOSTĘPU!)
+        
+        // User edytuje swoje recenzje
+        if ($review->id_user == $userId) {
+            $validated = $request->validate([
+                'rating' => 'required|integer|min:1|max:5',
+                'content' => 'required|string|max:4000',
+            ]);
+            
+            $review->update($validated);
+            
             return redirect()->route('books.show', $review->id_book)
-                             ->with('error', 'Brak uprawnień do edycji tej recenzji.');
+                             ->with('success', 'Recenzja zaktualizowana!');
         }
         
-        // Walidacja danych wejściowych
-        $validated = $request->validate([
-            'rating' => 'required|integer|min:1|max:5',
-            'content' => 'required|string|max:4000',
-        ]);
+        // Moderator edytuje wszystkie recenzje
+        if (in_array('Moderator', $userRoles)) {
+            $validated = $request->validate([
+                'rating' => 'required|integer|min:1|max:5',
+                'content' => 'required|string|max:4000',
+            ]);
+            
+            $review->update($validated);
+            
+            return redirect()->route('books.show', $review->id_book)
+                             ->with('success', 'Recenzja zaktualizowana!');
+        }
         
-        // Aktualizacja recenzji
-        $review->update($validated);
-        
+        // Admin i inni - brak dostępu
         return redirect()->route('books.show', $review->id_book)
-                         ->with('success', 'Recenzja zaktualizowana!');
+                         ->with('error', 'Brak uprawnień do edycji tej recenzji.');
     }
     
-    /**
-     * Usuwanie recenzji z bazy
-     */
     public function destroy($id)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
         $review = Review::findOrFail($id);
         
-        // Sprawdzenie uprawnień użytkownika
-        if ($review->id_user != Session::get('user_id') && 
-            !in_array('Admin', Session::get('user_roles', [])) &&
-            !in_array('Moderator', Session::get('user_roles', []))) {
-            return redirect()->route('books.show', $review->id_book)
-                             ->with('error', 'Brak uprawnień do usunięcia tej recenzji.');
+        $userRoles = Session::get('user_roles', []);
+        $userId = Session::get('user_id');
+        
+        // TYLKO MODERATOR może usuwać WSZYSTKIE recenzje
+        // USER może usuwać tylko SWOJE recenzje
+        
+        // User usuwa swoje recenzje
+        if ($review->id_user == $userId) {
+            $bookId = $review->id_book;
+            $review->delete();
+            
+            return redirect()->route('books.show', $bookId)
+                             ->with('success', 'Recenzja usunięta!');
         }
         
-        $bookId = $review->id_book;
-        $review->delete();
+        // Moderator usuwa wszystkie recenzje
+        if (in_array('Moderator', $userRoles)) {
+            $bookId = $review->id_book;
+            $review->delete();
+            
+            return redirect()->route('books.show', $bookId)
+                             ->with('success', 'Recenzja usunięta!');
+        }
         
-        return redirect()->route('books.show', $bookId)
-                         ->with('success', 'Recenzja usunięta!');
+        // Admin i inni - brak dostępu
+        return redirect()->route('books.show', $review->id_book)
+                         ->with('error', 'Brak uprawnień do usunięcia tej recenzji.');
     }
 }

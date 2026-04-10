@@ -9,12 +9,8 @@ use Illuminate\Support\Facades\DB;
 
 class ProfileController extends Controller
 {
-    /**
-     * Wyświetlanie profilu użytkownika
-     */
     public function show($id = null)
     {
-        // Obsługa przypadku gdy nie podano ID użytkownika
         if ($id === null) {
             if (!Session::has('user_id')) {
                 return redirect()->route('login');
@@ -22,50 +18,32 @@ class ProfileController extends Controller
             $id = Session::get('user_id');
         }
         
-        // WYMUSZENIE odświeżenia sesji
-        Session::flush();
-        Session::put('user_id', $id);
-        Session::save();
+        $user = User::with(['reviews.book', 'roles'])->findOrFail($id);
         
-        // Pobieranie danych użytkownika z relacjami
-        $user = User::with(['reviews.book', 'roles', 'booksAdded', 'booksUpdated'])
-                    ->findOrFail($id);
+        $stats = $this->calculateStats($id);
         
-        // Obliczanie statystyk użytkownika
-        $stats = $this->calculateStats($user);
+        $recentBooks = DB::table('user_book')
+            ->join('book', 'user_book.id_book', '=', 'book.id_book')
+            ->leftJoin('reading_status', 'user_book.id_status', '=', 'reading_status.id_status')
+            ->where('user_book.id_user', $id)
+            ->orderBy('user_book.created_at', 'desc')
+            ->limit(3)
+            ->select('book.*', 'user_book.id_status', 'reading_status.name as status_name')
+            ->get();
         
-        // DEBUG: zapisz statystyki do sesji
-        Session::put('debug_stats', $stats);
-        Session::put('debug_user_id', $user->id_user);
+        $totalBooks = DB::table('user_book')
+            ->where('id_user', $id)
+            ->count();
         
-        // Pobierz książki użytkownika do wyświetlenia na profilu
-        $userBooks = DB::table('user_book')
-                      ->where('id_user', $id)
-                      ->get();
-        
-        $bookIds = $userBooks->pluck('id_book')->toArray();
-        $user->trackedBooks = \App\Models\Book::whereIn('id_book', $bookIds)->get();
-        
-        // Dodaj dane pivot do książek
-        foreach ($user->trackedBooks as $book) {
-            $userBook = $userBooks->where('id_book', $book->id_book)->first();
-            if ($userBook) {
-                $book->pivot = (object)[
-                    'id_status' => $userBook->id_status ?? null,
-                    'progress' => $userBook->progress ?? null,
-                    'start_date' => $userBook->start_date ?? null,
-                    'planned_end_date' => $userBook->planned_end_date ?? null
-                ];
-            }
-        }
-        
-        return view('profile.show', compact('user', 'stats'));
+        return view('profile.show', [
+            'user' => $user,
+            'stats' => $stats,
+            'recentBooks' => $recentBooks,
+            'totalBooks' => $totalBooks
+        ]);
     }
     
-    /**
-     * Obliczanie statystyk użytkownika
-     */
-    private function calculateStats($user)
+    private function calculateStats($userId)
     {
         $stats = [
             'total_books' => 0,
@@ -76,18 +54,10 @@ class ProfileController extends Controller
             'average_rating' => 0,
         ];
         
-        // DEBUG: Sprawdź ID użytkownika
-        \Log::info("Calculating stats for user ID: " . $user->id_user);
-        
-        // Pobierz książki użytkownika
         $userBooks = DB::table('user_book')
-                      ->where('id_user', $user->id_user)
-                      ->get();
+            ->where('id_user', $userId)
+            ->get();
         
-        // DEBUG: Sprawdź co pobraliśmy
-        \Log::info("User books from DB:", $userBooks->toArray());
-        
-        // Oblicz statystyki
         foreach ($userBooks as $userBook) {
             $stats['total_books']++;
             
@@ -105,13 +75,9 @@ class ProfileController extends Controller
             }
         }
         
-        // DEBUG: Sprawdź statystyki
-        \Log::info("Calculated stats:", $stats);
-        
-        // Średnia ocen
         $reviews = DB::table('review')
-                    ->where('id_user', $user->id_user)
-                    ->get();
+            ->where('id_user', $userId)
+            ->get();
         
         if ($reviews->count() > 0) {
             $totalRating = 0;
@@ -124,12 +90,8 @@ class ProfileController extends Controller
         return $stats;
     }
     
-    /**
-     * Wyświetlanie formularza edycji profilu
-     */
     public function edit()
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
@@ -139,24 +101,18 @@ class ProfileController extends Controller
         return view('profile.edit', compact('user'));
     }
     
-    /**
-     * Aktualizacja danych profilu użytkownika
-     */
     public function update(Request $request)
     {
-        // Weryfikacja zalogowania użytkownika
         if (!Session::has('user_id')) {
             return redirect()->route('login');
         }
         
         $user = User::find(Session::get('user_id'));
         
-        // Walidacja danych wejściowych
         $validated = $request->validate([
             'email' => 'required|email|max:100|unique:user,email,' . $user->id_user . ',id_user',
         ]);
         
-        // Aktualizacja rekordu użytkownika
         $user->update($validated);
         
         return redirect()->route('profile.show')
